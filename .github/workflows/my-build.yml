@@ -1,0 +1,61 @@
+name: Eigener APK-Build
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Jeden Montag 04:17 UTC: Fork mit upstream abgleichen und neu bauen
+    - cron: '17 4 * * 1'
+
+permissions:
+  contents: write
+
+env:
+  GRADLE_OPTS: -Dorg.gradle.jvmargs=-Xmx8g -XX:MaxMetaspaceSize=512m -Dfile.encoding=UTF-8 -XX:+UseG1GC -Dkotlin.daemon.jvm.options=-Xmx4g
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: develop
+          fetch-depth: 0
+
+      - name: Mit upstream (element-hq) abgleichen
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git remote add upstream https://github.com/element-hq/element-x-android.git
+          git fetch upstream develop --tags
+          # Nur lokal im Runner mergen (GITHUB_TOKEN darf keine geänderten Workflow-Dateien pushen)
+          git merge --no-edit upstream/develop
+
+      - name: Speicherplatz freimachen
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          android: false
+          large-packages: false
+          tool-cache: true
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: APKs bauen (Gplay + F-Droid)
+        run: ./gradlew :app:assembleGplayDebug :app:assembleFdroidDebug --stacktrace --no-configuration-cache
+
+      - name: Release erstellen
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="build-$(date -u +%Y%m%d-%H%M)"
+          mkdir out
+          cp app/build/outputs/apk/gplay/debug/*-universal-debug.apk  out/element-x-gplay.apk
+          cp app/build/outputs/apk/fdroid/debug/*-universal-debug.apk out/element-x-fdroid.apk
+          gh release create "$TAG" out/*.apk \
+            --title "Element X $TAG" \
+            --notes "Gebaut aus element-hq/element-x-android @ $(git rev-parse --short upstream/develop)"
